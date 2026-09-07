@@ -144,7 +144,36 @@ func (cb *ContextBuilder) promptRegistryOrDefault() *PromptRegistry {
 	return cb.promptRegistry
 }
 
+// kernelIdentityFile is the workspace file that fully replaces the built-in
+// identity section of the system prompt when it exists and is not blank.
+const kernelIdentityFile = "KERNEL.md"
+
+// loadKernelIdentity returns the contents of <workspace>/KERNEL.md when the
+// file exists and holds non-whitespace content. A missing or blank file is the
+// normal case and falls back to the built-in identity; any other read error is
+// logged and also falls back, so a bad file never stops the agent.
+func (cb *ContextBuilder) loadKernelIdentity() (string, bool) {
+	path := filepath.Join(cb.workspace, kernelIdentityFile)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			logger.WarnCF("agent", "Failed to read kernel identity file", map[string]any{
+				"path":  path,
+				"error": err.Error(),
+			})
+		}
+		return "", false
+	}
+	if strings.TrimSpace(string(data)) == "" {
+		return "", false
+	}
+	return string(data), true
+}
+
 func (cb *ContextBuilder) getIdentity(includeToolUseRule bool) string {
+	if identity, ok := cb.loadKernelIdentity(); ok {
+		return identity
+	}
 	workspacePath, _ := filepath.Abs(filepath.Join(cb.workspace))
 	version := config.FormatVersion()
 	rules := []string{}
