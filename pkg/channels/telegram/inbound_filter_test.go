@@ -298,7 +298,7 @@ func TestInboundRequest_ReplyAndDeleteTargetTheRightMessage(t *testing.T) {
 	}
 }
 
-func TestInboundRequest_HelpersRejectUseAfterCallback(t *testing.T) {
+func TestInboundRequest_HelpersRejectUnboundCopies(t *testing.T) {
 	var escaped InboundRequest
 	ch, _, _ := newFilterTestChannel(t)
 	ch.SetInboundFilter(func(_ context.Context, req InboundRequest) (InboundDecision, error) {
@@ -309,10 +309,10 @@ func TestInboundRequest_HelpersRejectUseAfterCallback(t *testing.T) {
 		t.Fatalf("handleMessage: %v", err)
 	}
 	if err := escaped.Reply(context.Background(), "late"); !errors.Is(err, errInboundReplyUnavailable) {
-		t.Fatalf("Reply after callback returned %v", err)
+		t.Fatalf("Reply on an unbound copy returned %v", err)
 	}
 	if err := escaped.Delete(context.Background()); !errors.Is(err, errInboundReplyUnavailable) {
-		t.Fatalf("Delete after callback returned %v", err)
+		t.Fatalf("Delete on an unbound copy returned %v", err)
 	}
 }
 
