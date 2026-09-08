@@ -44,10 +44,9 @@ func (al *AgentLoop) ProcessDirectWithChannel(
 	ctx context.Context,
 	content, sessionKey, channel, chatID string,
 ) (string, error) {
-	if err := al.ensureHooksInitialized(ctx); err != nil {
-		return "", err
-	}
-	if err := al.ensureMCPInitialized(ctx); err != nil {
+	// Hooks and MCP belong to a generation, so bringing them up must not race
+	// a commit. processMessage takes the barrier again for the turn itself.
+	if err := al.ensureSubsystemsForTurn(ctx); err != nil {
 		return "", err
 	}
 
@@ -65,10 +64,29 @@ func (al *AgentLoop) ProcessDirectWithChannel(
 	return al.processMessage(ctx, msg)
 }
 
+// ensureSubsystemsForTurn initializes hooks and MCP under the turn barrier, for
+// callers that reach the loop without going through Run().
+func (al *AgentLoop) ensureSubsystemsForTurn(ctx context.Context) error {
+	if err := al.turns.enter(ctx); err != nil {
+		return err
+	}
+	defer al.turns.leave()
+
+	if err := al.ensureHooksInitialized(ctx); err != nil {
+		return err
+	}
+	return al.ensureMCPInitialized(ctx)
+}
+
 func (al *AgentLoop) ProcessHeartbeat(
 	ctx context.Context,
 	content, channel, chatID string,
 ) (string, error) {
+	if err := al.turns.enter(ctx); err != nil {
+		return "", err
+	}
+	defer al.turns.leave()
+
 	if err := al.ensureHooksInitialized(ctx); err != nil {
 		return "", err
 	}
@@ -121,6 +139,14 @@ func (al *AgentLoop) prepareInboundMessageForAgent(
 }
 
 func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage) (string, error) {
+	// Hold the barrier before the route and agent are resolved: everything this
+	// turn reads afterwards - registry, provider, hooks, MCP tools - must come
+	// from one generation, and a reload commits only when no turn holds it.
+	if err := al.turns.enter(ctx); err != nil {
+		return "", err
+	}
+	defer al.turns.leave()
+
 	msg = al.prepareInboundMessageForAgent(ctx, msg)
 
 	// Add message preview to log (show full content for error messages)

@@ -336,6 +336,17 @@ func spawnSubTurn(
 	childCtx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
+	// Register before the child takes any reference to the running generation.
+	// A sub-turn cannot enter the turn barrier - its parent holds it, and a
+	// child waiting on its parent would deadlock - so it registers as a holder
+	// that a generation change waits for. Refused only when a commit is
+	// already under way, in which case pinning this generation would hand the
+	// child a provider that is about to be closed.
+	if err := al.turns.reserveSubTurn(parentTS.generation); err != nil {
+		return nil, fmt.Errorf("%w: cannot start a sub-turn", err)
+	}
+	defer al.turns.releaseSubTurn()
+
 	childID := al.generateSubTurnID()
 
 	// Resolve the agent instance for the child turn.
@@ -402,6 +413,7 @@ func spawnSubTurn(
 	childTS := newTurnState(&agent, opts, scope)
 
 	// Set SubTurn-specific fields
+	childTS.generation = parentTS.generation
 	childTS.cancelFunc = cancel
 	childTS.critical = cfg.Critical
 	childTS.depth = parentTS.depth + 1

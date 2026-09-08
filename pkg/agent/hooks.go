@@ -293,6 +293,32 @@ func (hm *HookManager) Mount(reg HookRegistration) error {
 	return nil
 }
 
+// takeUnmanaged removes every registration that is not named in managed and
+// returns them, closing nothing.
+//
+// It exists so a reload can retire the hooks that came from config while
+// leaving hooks someone mounted through MountHook alone: those belong to the
+// caller that mounted them, not to the configuration being replaced.
+func (hm *HookManager) takeUnmanaged(managed map[string]struct{}) []HookRegistration {
+	if hm == nil {
+		return nil
+	}
+
+	hm.mu.Lock()
+	defer hm.mu.Unlock()
+
+	kept := make([]HookRegistration, 0, len(hm.hooks))
+	for name, reg := range hm.hooks {
+		if _, isManaged := managed[name]; isManaged {
+			continue
+		}
+		kept = append(kept, reg)
+		delete(hm.hooks, name)
+	}
+	hm.rebuildOrdered()
+	return kept
+}
+
 func (hm *HookManager) Unmount(name string) {
 	if hm == nil || name == "" {
 		return

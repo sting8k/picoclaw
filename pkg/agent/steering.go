@@ -369,6 +369,15 @@ func (al *AgentLoop) agentForSession(sessionKey string) *AgentInstance {
 //
 // If no steering messages are pending, it returns an empty string.
 func (al *AgentLoop) Continue(ctx context.Context, sessionKey, channel, chatID string) (string, error) {
+	// A continuation is a turn: it resolves an agent, dequeues steering and
+	// runs the loop. It has to hold the barrier for the same reason a message
+	// does, and it enters before claiming the session so a refused wait leaves
+	// nothing claimed.
+	if err := al.turns.enter(ctx); err != nil {
+		return "", err
+	}
+	defer al.turns.leave()
+
 	// Claim the session with a unique placeholder to prevent a TOCTOU race where two
 	// concurrent Continue calls for the same session both pass the active-turn
 	// check and create parallel turns. The placeholder is replaced by the real
