@@ -35,9 +35,9 @@ const (
 	InboundReject
 )
 
-// errInboundReplyUnavailable is returned by the request helpers when they are
-// used outside the synchronous filter call that created them.
-var errInboundReplyUnavailable = errors.New("telegram: inbound request helper is no longer valid")
+// errInboundReplyUnavailable is returned by the request helpers on a request
+// the channel did not build, such as a zero value or a partial copy.
+var errInboundReplyUnavailable = errors.New("telegram: inbound request has no transport bound to it")
 
 // InboundRequest is the read-only view of an inbound message handed to an
 // InboundFilter.
@@ -48,8 +48,8 @@ var errInboundReplyUnavailable = errors.New("telegram: inbound request helper is
 // that only care about one message do not have to walk the batch.
 //
 // Messages and everything reachable from it is borrowed for the duration of the
-// callback. Do not mutate or retain it, and do not call Reply or Delete after
-// the callback returns.
+// callback: do not mutate or retain it. Reply and Delete stay usable
+// afterwards, but retaining the request is not part of the contract.
 type InboundRequest struct {
 	Sender    bus.SenderInfo
 	ChatID    string            // raw numeric chat ID, without the forum topic suffix
@@ -183,8 +183,9 @@ func (c *TelegramChannel) applyInboundFilter(
 }
 
 // newInboundRequest builds the read-only view passed to the filter. The reply
-// and delete helpers are bound to the representative message and stop working
-// once the callback returns.
+// and delete helpers are bound to the representative message. They keep
+// working after the callback returns, but callers must not retain them: the
+// batch they describe is only valid for the duration of the call.
 func (c *TelegramChannel) newInboundRequest(
 	messages []*telego.Message,
 	message *telego.Message,
