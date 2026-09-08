@@ -37,9 +37,20 @@ func (al *AgentLoop) GetConfig() *config.Config {
 
 func (al *AgentLoop) SetMediaStore(s media.MediaStore) {
 	al.mediaStore = s
+	propagateMediaStore(al.GetRegistry(), s)
+}
 
-	// Propagate store to all registered tools that can emit media.
-	registry := al.GetRegistry()
+// propagateMediaStore hands the store to every tool in a registry that can emit
+// media.
+//
+// It takes the registry explicitly because tools are rebuilt from scratch on
+// every reload, each time with a nil store. A candidate has to be given the
+// process's store before it is committed; calling the setter afterwards would
+// leave a window where the live registry has media tools that cannot work.
+func propagateMediaStore(registry *AgentRegistry, s media.MediaStore) {
+	if registry == nil {
+		return
+	}
 	for _, agentID := range registry.ListAgentIDs() {
 		if agent, ok := registry.GetAgent(agentID); ok {
 			agent.Tools.SetMediaStore(s)

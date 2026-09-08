@@ -65,6 +65,10 @@ type AgentLoop struct {
 	// workerSem limits concurrent turn processing workers.
 	workerSem chan struct{}
 
+	// turns is held by every turn for its whole lifetime so a generation
+	// change can wait for a point where none is running.
+	turns turnBarrier
+
 	// activeTurnStates tracks active turns per session to prevent duplicates.
 	activeTurnStates sync.Map
 	subTurnCounter   atomic.Int64
@@ -117,6 +121,11 @@ type continuationTarget struct {
 	Channel    string
 	ChatID     string
 }
+
+// turnDrainGracePeriod bounds how long a generation change waits for the work
+// that is already running. It is a variable so tests can shorten the wait
+// instead of simulating the state it waits on.
+var turnDrainGracePeriod = 30 * time.Second
 
 const (
 	defaultResponse            = "The model returned an empty response. This may indicate a provider error or token limit."
@@ -370,117 +379,53 @@ type turnEventScope struct {
 	context    *TurnContext
 }
 
-// ReloadProviderAndConfig atomically swaps the provider and config with proper synchronization.
-// It uses a context to allow timeout control from the caller.
-// Returns an error if the reload fails or context is canceled.
+// ReloadProviderAndConfig replaces the provider and config with a new
+// generation, or fails without touching the one that is running.
+//
+// The order is deliberate and is the whole point of this function:
+//
+//	close admission → drain running turns → build the candidate →
+//	commit → reopen admission
+//
+// Building the candidate only after the drain means a failure has nothing to
+// roll back, and committing while no turn is running means no turn can end up
+// with one generation's registry and another's hooks or MCP tools. A turn is
+// drained as a whole, not per LLM request: between two tool calls a turn holds
+// no request, yet it will still use the provider and hooks it started with.
+//
+// Any failure before the commit leaves the running generation intact and
+// reopens admission. There is no partial success: either the caller is told the
+// reload failed and the old configuration is still serving, or the new
+// generation is live.
 func (al *AgentLoop) ReloadProviderAndConfig(
 	ctx context.Context,
 	provider providers.LLMProvider,
 	cfg *config.Config,
 ) error {
-	// Validate inputs
 	if provider == nil {
 		return fmt.Errorf("provider cannot be nil")
 	}
 	if cfg == nil {
 		return fmt.Errorf("config cannot be nil")
 	}
-
-	var registry *AgentRegistry
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				logger.RecoverPanicNoExit(r)
-				logger.ErrorCF("agent", "Panic during registry creation",
-					map[string]any{"panic": r})
-				registry = nil
-			}
-		}()
-		registry = NewAgentRegistry(cfg, provider)
-	}()
-	if registry == nil {
-		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("context canceled during registry creation: %w", err)
-		}
-		return fmt.Errorf("registry creation failed")
+	if ctx == nil {
+		ctx = context.Background()
 	}
 
-	// Check context again before proceeding
-	if err := ctx.Err(); err != nil {
-		return fmt.Errorf("context canceled after registry creation: %w", err)
+	// No unblock on this path: block() either owns the barrier or never took
+	// it, and it cleans up its own timeout and cancellation. Reopening here
+	// would release a reload that is already committing.
+	if err := al.turns.block(ctx, turnDrainGracePeriod); err != nil {
+		return fmt.Errorf("reload aborted, current configuration still running: %w", err)
+	}
+	defer al.turns.unblock()
+
+	gen, err := al.prepareGeneration(ctx, provider, cfg)
+	if err != nil {
+		return err
 	}
 
-	// Ensure shared tools are re-registered on the new registry
-	registerSharedTools(al, cfg, al.bus, registry, provider)
-
-	newEvolution, evolutionErr := newEvolutionBridge(registry, cfg, provider)
-	if evolutionErr != nil {
-		logger.WarnCF("agent", "Failed to reinitialize evolution bridge during reload",
-			map[string]any{"error": evolutionErr.Error()})
-	}
-	if newEvolution != nil {
-		newEvolution.setCurrentCheck(al.isCurrentEvolutionBridge)
-		if err := newEvolution.subscribeRuntimeEvents(al.runtimeEvents.Channel()); err != nil {
-			logger.WarnCF("agent", "Failed to subscribe reloaded evolution bridge to runtime events",
-				map[string]any{"error": err.Error()})
-		}
-	}
-
-	// Atomically swap the config and registry under write lock
-	// This ensures readers see a consistent pair
-	al.mu.Lock()
-	oldRegistry := al.registry
-	oldEvolution := al.evolution
-
-	// Store new values
-	al.cfg = cfg
-	al.registry = registry
-	al.evolution = newEvolution
-
-	// Also update fallback chain with new config; rebuild rate limiter registry.
-	newRL := providers.NewRateLimiterRegistry()
-	for _, agentID := range registry.ListAgentIDs() {
-		if agent, ok := registry.GetAgent(agentID); ok {
-			newRL.RegisterCandidates(agent.Candidates)
-			newRL.RegisterCandidates(agent.LightCandidates)
-		}
-	}
-	al.fallback = providers.NewFallbackChain(providers.NewCooldownTracker(), newRL)
-
-	al.mu.Unlock()
-	al.refreshRuntimeEventLogger(cfg)
-
-	oldMCPManager := al.mcp.reset()
-	al.hookRuntime.reset(al)
-	configureHookManagerFromConfig(al.hooks, cfg)
-	if err := al.ensureHooksInitialized(ctx); err != nil {
-		logger.WarnCF("agent", "Configured hooks failed to reinitialize after reload",
-			map[string]any{"error": err.Error()})
-	}
-	if oldMCPManager != nil {
-		if err := oldMCPManager.Close(); err != nil {
-			logger.WarnCF("agent", "Failed to close previous MCP manager during reload",
-				map[string]any{"error": err.Error()})
-		}
-	}
-	if oldEvolution != nil {
-		if err := oldEvolution.Close(); err != nil {
-			logger.WarnCF("agent", "Failed to close previous evolution bridge during reload",
-				map[string]any{"error": err.Error()})
-		}
-	}
-	if err := al.ensureMCPInitialized(ctx); err != nil {
-		logger.WarnCF("agent", "MCP failed to reinitialize after reload",
-			map[string]any{"error": err.Error()})
-	}
-
-	// Close old provider after releasing the lock
-	// This prevents blocking readers while closing
-	if oldProvider, ok := extractProvider(oldRegistry); ok {
-		if stateful, ok := oldProvider.(providers.StatefulProvider); ok {
-			al.closeReloadedProvider(ctx, stateful)
-		}
-	}
+	al.commit(gen)
 
 	logger.InfoCF("agent", "Provider and config reloaded successfully",
 		map[string]any{

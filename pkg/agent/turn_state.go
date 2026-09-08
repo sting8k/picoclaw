@@ -225,6 +225,7 @@ type turnState struct {
 	depth                int                    // SubTurn depth (0 for root turn)
 	parentTurnID         string                 // Parent turn ID (empty for root turn)
 	childTurnIDs         []string               // Child turn IDs
+	generation           uint64                 // barrier generation this turn started on
 	pendingResults       chan *tools.ToolResult // Channel for SubTurn results
 	concurrencySem       chan struct{}          // Semaphore for limiting concurrent SubTurns
 	isFinished           atomic.Bool            // Whether this turn has finished
@@ -286,6 +287,9 @@ func newTurnState(agent *AgentInstance, opts processOptions, scope turnEventScop
 }
 
 func (al *AgentLoop) registerActiveTurn(ts *turnState) {
+	// The turn is inside the barrier here, so the generation it records cannot
+	// change underneath it.
+	ts.generation = al.turns.currentGeneration()
 	al.activeTurnStates.Store(ts.sessionKey, ts)
 }
 
