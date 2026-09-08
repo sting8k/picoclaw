@@ -68,6 +68,12 @@ type TelegramChannel struct {
 	mediaGroupMu    sync.Mutex
 	mediaGroups     map[string]*telegramMediaGroup
 	mediaGroupDelay time.Duration
+
+	// inboundMu guards the inbound filter and the command menu override, both
+	// of which may be replaced while messages are being handled.
+	inboundMu     sync.RWMutex
+	inboundFilter InboundFilter
+	commandDefs   []commands.Definition
 }
 
 type telegramMediaGroup struct {
@@ -178,7 +184,7 @@ func (c *TelegramChannel) Start(ctx context.Context) error {
 		"username": c.bot.Username(),
 	})
 
-	c.startCommandRegistration(c.ctx, commands.BuiltinDefinitions())
+	c.startCommandRegistration(c.ctx, c.commandDefinitions())
 
 	go func() {
 		if err = bh.Start(); err != nil {
@@ -1070,6 +1076,12 @@ func (c *TelegramChannel) handleMessages(ctx context.Context, messages []*telego
 		logger.DebugCF("telegram", "Message rejected by allowlist", map[string]any{
 			"user_id": platformID,
 		})
+		return nil
+	}
+
+	// Give the inbound filter the last word before anything is tracked,
+	// downloaded, logged or published.
+	if !c.applyInboundFilter(ctx, messages, message, sender) {
 		return nil
 	}
 
