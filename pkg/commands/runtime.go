@@ -38,6 +38,21 @@ type ContextStats struct {
 	MessageCount      int
 }
 
+// ModelPreset is one entry of the running config's model_list, reduced to what
+// a command may show. Credentials, endpoints and headers are deliberately
+// absent: this crosses into user-visible output.
+type ModelPreset struct {
+	// Name is the model_name alias operators use in config.
+	Name string
+	// Provider is the resolved provider for this preset, not a guess from the
+	// model string.
+	Provider string
+	// Model is the model identifier the provider is asked for.
+	Model string
+	// Current reports whether the running agent resolved to this preset.
+	Current bool
+}
+
 // StopResult describes the outcome of a stop request for the current session.
 type StopResult struct {
 	Stopped  bool
@@ -64,4 +79,7 @@ type Runtime struct {
 	ClearHistory       func() error
 	ReloadConfig       func() error
 	StopActiveTurn     func() (StopResult, error)
+	// ListModelPresets reports the model_list of the running config. Optional:
+	// when it is absent, commands fall back to GetModelInfo.
+	ListModelPresets func() []ModelPreset
 }
