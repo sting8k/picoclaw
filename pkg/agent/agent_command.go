@@ -296,6 +296,9 @@ func (al *AgentLoop) buildCommandsRuntime(
 		rt.GetModelInfo = func() (string, string) {
 			return agent.Model, resolvedCandidateProvider(agent.Candidates, cfg.Agents.Defaults.Provider)
 		}
+		rt.ListModelPresets = func() []commands.ModelPreset {
+			return modelPresets(cfg, agent)
+		}
 		rt.SwitchModel = func(value string) (string, error) {
 			value = strings.TrimSpace(value)
 			modelCfg, err := resolvedModelConfig(cfg, value, agent.Workspace)
@@ -498,4 +501,91 @@ func (al *AgentLoop) clearPendingSkills(sessionKey string) {
 		return
 	}
 	al.pendingSkills.Delete(sessionKey)
+}
+
+// modelPresets reports the running config's model_list for /list models.
+//
+// Finding the current one takes two passes, and the order matters. Creating the
+// provider resolves an alias like "fast" down to a concrete model id, and the
+// agent carries that id afterwards - so identity has to be part of the match.
+// But two presets can share one backend and differ only by alias, and then the
+// alias the operator selected is the answer. Matching identity first would mark
+// whichever of them comes first in the file, which is a coin toss.
+func modelPresets(cfg *config.Config, agent *AgentInstance) []commands.ModelPreset {
+	if cfg == nil || len(cfg.ModelList) == 0 {
+		return nil
+	}
+
+	currentAlias := ""
+	currentProvider := ""
+	currentModel := ""
+	if agent != nil {
+		currentAlias = strings.TrimSpace(resolvedCandidateModelName(agent.Candidates, agent.Model))
+		currentProvider = strings.TrimSpace(resolvedCandidateProvider(agent.Candidates, cfg.Agents.Defaults.Provider))
+		if len(agent.Candidates) > 0 {
+			currentModel = strings.TrimSpace(agent.Candidates[0].Model)
+		}
+		if currentModel == "" {
+			_, currentModel = splitModelIdentifier(agent.Model)
+		}
+	}
+
+	presets := make([]commands.ModelPreset, 0, len(cfg.ModelList))
+	for _, modelCfg := range cfg.ModelList {
+		if modelCfg == nil {
+			continue
+		}
+		provider, model := splitModelIdentifier(modelCfg.Model)
+		if configured := strings.TrimSpace(modelCfg.Provider); configured != "" {
+			provider = configured
+		}
+		presets = append(presets, commands.ModelPreset{
+			Name:     strings.TrimSpace(modelCfg.ModelName),
+			Provider: provider,
+			Model:    model,
+		})
+	}
+
+	if current := currentPreset(presets, currentAlias, currentProvider, currentModel); current >= 0 {
+		presets[current].Current = true
+	}
+	return presets
+}
+
+// currentPreset reports which preset the agent resolved, or -1 for none.
+func currentPreset(presets []commands.ModelPreset, alias, provider, model string) int {
+	for i, preset := range presets {
+		if preset.Name != "" && preset.Name == alias && providerMatches(preset.Provider, provider) {
+			return i
+		}
+	}
+	for i, preset := range presets {
+		if preset.Model != "" && model != "" &&
+			strings.EqualFold(preset.Model, model) &&
+			providerMatches(preset.Provider, provider) {
+			return i
+		}
+	}
+	return -1
+}
+
+// providerMatches treats an unnamed provider on either side as compatible: a
+// preset that does not name one is not claiming a different backend.
+func providerMatches(presetProvider, currentProvider string) bool {
+	if presetProvider == "" || currentProvider == "" {
+		return true
+	}
+	return strings.EqualFold(presetProvider, currentProvider)
+}
+
+// splitModelIdentifier separates a "provider/model" identifier. It reports no
+// provider when the identifier carries no prefix, because a guess here would be
+// shown to the operator as fact.
+func splitModelIdentifier(identifier string) (provider, model string) {
+	identifier = strings.TrimSpace(identifier)
+	prefix, rest, found := strings.Cut(identifier, "/")
+	if !found {
+		return "", identifier
+	}
+	return strings.TrimSpace(prefix), strings.TrimSpace(rest)
 }
