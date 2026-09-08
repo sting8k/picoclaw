@@ -85,7 +85,7 @@ func DownloadFile(urlStr, filename string, opts DownloadOptions) string {
 	mediaDir := media.TempDir()
 	if err := os.MkdirAll(mediaDir, 0o700); err != nil {
 		logger.ErrorCF(opts.LoggerPrefix, "Failed to create media directory", map[string]any{
-			"error": err.Error(),
+			"error": redactedError(err),
 		})
 		return ""
 	}
@@ -100,8 +100,8 @@ func DownloadFile(urlStr, filename string, opts DownloadOptions) string {
 		validateErr := ValidateSafeHTTPURL(urlStr, nil, nil)
 		if validateErr != nil {
 			logger.ErrorCF(opts.LoggerPrefix, "Blocked unsafe download URL", map[string]any{
-				"error": validateErr.Error(),
-				"url":   urlStr,
+				"error": redactedError(validateErr),
+				"url":   RedactTelegramBotToken(urlStr),
 			})
 			return ""
 		}
@@ -112,7 +112,7 @@ func DownloadFile(urlStr, filename string, opts DownloadOptions) string {
 		})
 		if err != nil {
 			logger.ErrorCF(opts.LoggerPrefix, "Failed to create safe download client", map[string]any{
-				"error": err.Error(),
+				"error": redactedError(err),
 			})
 			return ""
 		}
@@ -136,7 +136,7 @@ func DownloadFile(urlStr, filename string, opts DownloadOptions) string {
 	req, err := http.NewRequest(http.MethodGet, urlStr, nil)
 	if err != nil {
 		logger.ErrorCF(opts.LoggerPrefix, "Failed to create download request", map[string]any{
-			"error": err.Error(),
+			"error": redactedError(err),
 		})
 		return ""
 	}
@@ -152,8 +152,8 @@ func DownloadFile(urlStr, filename string, opts DownloadOptions) string {
 	resp, err := client.Do(req)
 	if err != nil {
 		logger.ErrorCF(opts.LoggerPrefix, "Failed to download file", map[string]any{
-			"error": err.Error(),
-			"url":   urlStr,
+			"error": redactedError(err),
+			"url":   RedactTelegramBotToken(urlStr),
 		})
 		return ""
 	}
@@ -162,7 +162,7 @@ func DownloadFile(urlStr, filename string, opts DownloadOptions) string {
 	if resp.StatusCode != http.StatusOK {
 		logger.ErrorCF(opts.LoggerPrefix, "File download returned non-200 status", map[string]any{
 			"status": resp.StatusCode,
-			"url":    urlStr,
+			"url":    RedactTelegramBotToken(urlStr),
 		})
 		return ""
 	}
@@ -170,7 +170,7 @@ func DownloadFile(urlStr, filename string, opts DownloadOptions) string {
 	out, err := os.Create(localPath)
 	if err != nil {
 		logger.ErrorCF(opts.LoggerPrefix, "Failed to create local file", map[string]any{
-			"error": err.Error(),
+			"error": redactedError(err),
 		})
 		return ""
 	}
@@ -179,13 +179,13 @@ func DownloadFile(urlStr, filename string, opts DownloadOptions) string {
 		_ = out.Close()
 		os.Remove(localPath)
 		logger.ErrorCF(opts.LoggerPrefix, "Failed to write file", map[string]any{
-			"error": err.Error(),
+			"error": redactedError(err),
 		})
 		return ""
 	}
 	if err := out.Close(); err != nil {
 		logger.ErrorCF(opts.LoggerPrefix, "Failed to close downloaded file", map[string]any{
-			"error": err.Error(),
+			"error": redactedError(err),
 		})
 		os.Remove(localPath)
 		return ""

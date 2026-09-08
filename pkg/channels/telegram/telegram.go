@@ -1419,7 +1419,9 @@ func (c *TelegramChannel) downloadFileWithInfo(file *telego.File, ext string) st
 	}
 
 	url := c.bot.FileDownloadURL(file.FilePath)
-	logger.DebugCF("telegram", "File URL", map[string]any{"url": url})
+	// The download URL embeds the bot token. Keep the real one for the request
+	// and log a redacted copy: a debug line is not worth the bot's credential.
+	logger.DebugCF("telegram", "File URL", map[string]any{"url": utils.RedactTelegramBotToken(url)})
 
 	// Use FilePath as filename for better identification
 	filename := file.FilePath + ext
